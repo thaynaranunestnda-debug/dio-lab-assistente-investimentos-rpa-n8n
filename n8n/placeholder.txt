@@ -1,0 +1,349 @@
+{
+  "name": "DIO - Curso 06",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "Clientes",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "58480911-f097-44b7-bfa1-7f9d1c0ca8f2",
+      "name": "Webhook",
+      "webhookId": "91f13e05-4da9-4943-95b3-e6e4f02c36a1"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ $json }}",
+        "options": {
+          "responseCode": 200
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        2160,
+        -304
+      ],
+      "id": "14cba66e-039d-48a8-a0d1-1e2822b1eb8e",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "url": "https://digitalinnovationone.github.io/dio-lab-assistente-investimentos-rpa-n8n/data.csv",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        192,
+        0
+      ],
+      "id": "b9369e0b-6002-4789-9d03-9928ed96908b",
+      "name": "HTTP Request"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Pega o CSV como texto vindo do HTTP Request\nconst csvRaw = $json.data ?? $json.body ?? $json;\nconst text = (typeof csvRaw === \"string\") ? csvRaw : JSON.stringify(csvRaw);\n\nconst lines = text.split(/\\r?\\n/).map(l => l.trim()).filter(Boolean);\nconst headers = lines[0].split(\",\").map(h => h.trim());\n\nconst investimentos = lines.slice(1).map(line => {\n  const cols = line.split(\",\").map(c => c.trim());\n  const obj = {};\n  headers.forEach((h, i) => obj[h] = cols[i] ?? \"\");\n\n  // normaliza mínimo para número\n  obj.minimo = Number(String(obj.minimo).replace(/[^\\d]/g, \"\")) || 0;\n\n  return obj;\n});\n\nreturn [{ json: { investimentos } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ],
+      "id": "d78ab9b2-a3f7-430e-8bf5-a2548a819630",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        528,
+        -144
+      ],
+      "id": "99da2b09-1364-48af-8dbb-1f676c061e95",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ===== Funções auxiliares =====\nconst pick = (lista) => lista[Math.floor(Math.random() * lista.length)];\n\nconst normalizar = (t) =>\n  String(t ?? '')\n    .toLowerCase()\n    .normalize('NFD')\n    .replace(/[\\u0300-\\u036f]/g, '')\n    .trim();\n\nconst paraNumero = (valor) => {\n  if (typeof valor === 'number') return valor;\n  return Number(\n    String(valor).replace(/[^\\d,.-]/g, '').replace(/\\./g, '').replace(',', '.')\n  );\n};\n\nconst moeda = (n) =>\n  n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });\n\n// Procura dentro de um objeto a primeira lista que tenha itens com \"produto\"\nconst acharLista = (obj, chave) => {\n  if (Array.isArray(obj) && obj.length && obj[0] && obj[0][chave] !== undefined) return obj;\n  if (obj && typeof obj === 'object') {\n    for (const v of Object.values(obj)) {\n      const r = acharLista(v, chave);\n      if (r) return r;\n    }\n  }\n  return null;\n};\n\n// ===== Clientes (vêm do Webhook) =====\nconst body = $('Webhook').first().json.body ?? $('Webhook').first().json;\nconst clientes = acharLista(body, 'perfil') ?? [body];\n\n// ===== Investimentos (vêm do primeiro Code in JavaScript) =====\nconst saidaCsv = $('Code in JavaScript').all().map((i) => i.json);\nlet investimentos = acharLista(saidaCsv, 'produto');\n\n// Se não achou, tenta ler os itens diretamente\nif (!investimentos) {\n  investimentos = saidaCsv.filter((i) => i.produto !== undefined);\n}\n\nif (!investimentos || investimentos.length === 0) {\n  throw new Error(\n    'Não encontrei a lista de investimentos na saída do nó \"Code in JavaScript\". Confira o Output dele.'\n  );\n}\n\n// ===== Processamento =====\nconst resultados = clientes.map((c) => {\n  const nome = c.nome;\n  const email = c.email;\n  const perfil = c.perfil;\n  const saldoNum = paraNumero(c.saldo);\n\n  const elegiveis = investimentos.filter(\n    (inv) =>\n      normalizar(inv.perfil) === normalizar(perfil) &&\n      Number(inv.minimo) <= saldoNum\n  );\n\n  let escolhido = null;\n  let motivo = '';\n\n  if (elegiveis.length > 0) {\n    escolhido = elegiveis.reduce((a, b) =>\n      Number(b.minimo) > Number(a.minimo) ? b : a\n    );\n    motivo = `Perfil ${perfil} e saldo de ${moeda(saldoNum)} atendem ao mínimo de ${moeda(Number(escolhido.minimo))} do produto.`;\n  } else {\n    motivo = `Nenhum produto do perfil ${perfil} é compatível com o saldo de ${moeda(saldoNum)}.`;\n  }\n\n  const mensagens = escolhido\n    ? [\n        `Olá, ${nome}! Com seu saldo de ${moeda(saldoNum)}, recomendamos ${escolhido.produto} (rentabilidade: ${escolhido.rentabilidade}). Ele combina com o seu perfil ${perfil}.`,\n        `Oi, ${nome}! Pensando no seu perfil ${perfil}, separamos uma opção para você: ${escolhido.produto}, com rentabilidade ${escolhido.rentabilidade}.`,\n        `${nome}, boas notícias! ${escolhido.produto} é uma ótima opção para o seu perfil ${perfil} e cabe no seu saldo de ${moeda(saldoNum)}.`,\n      ]\n    : [\n        `Olá, ${nome}! No momento não encontramos um produto compatível com seu saldo. Fale com um de nossos consultores.`,\n      ];\n\n  return {\n    nome,\n    email,\n    perfil,\n    saldo_texto: c.saldo,\n    saldo_num: saldoNum,\n    recomendacao: escolhido,\n    motivo,\n    mensagens,\n    mensagem_escolhida: pick(mensagens),\n  };\n});\n\nreturn [\n  {\n    json: {\n      ok: true,\n      total_clientes: resultados.length,\n      total_investimentos: investimentos.length,\n      resultados,\n    },\n  },\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        704,
+        -80
+      ],
+      "id": "72c6bbb9-c607-4215-9deb-743487e32f22",
+      "name": "Code in JavaScript1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const resultados = $json.resultados || [];\n\nfunction parseBRL(valor) {\n  if (!valor) return 0;\n  const s = String(valor)\n    .replace(\"R$\", \"\")\n    .replace(/\\./g, \"\")\n    .replace(\",\", \".\")\n    .replace(/[^\\d.]/g, \"\")\n    .trim();\n  const n = Number(s);\n  return Number.isFinite(n) ? n : 0;\n}\n\n// retorna UM ITEM por cliente\nconst out = resultados.map((c) => {\n  const saldoNum = c.saldo_num ?? parseBRL(c.saldo_texto ?? c.saldo);\n\n  return {\n    json: {\n      email_to: String(c.email || \"\").trim(),\n      nome: c.nome,\n      perfil: c.perfil,\n      saldo_texto: c.saldo_texto,\n      saldo_num: saldoNum,\n      recomendacao: c.recomendacao,\n      motivo: c.motivo,\n      mensagens: c.mensagens,\n      mensagem_escolhida: c.mensagem_escolhida,\n    },\n  };\n});\n\nreturn out;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        912,
+        -96
+      ],
+      "id": "84fe31b9-9f97-4e5a-897b-e494573a2ccf",
+      "name": "Code in JavaScript2"
+    },
+    {
+      "parameters": {
+        "modelId": {
+          "__rl": true,
+          "value": "gpt-4o",
+          "mode": "list",
+          "cachedResultName": "GPT-4O"
+        },
+        "responses": {
+          "values": [
+            {
+              "content": "=Escreva um e-mail curto em pt-BR para o cliente abaixo, sem prometer ganhos e sem garantias.\n\nCliente:\nNome: {{ $json.nome }}\nPerfil: {{ $json.perfil }}\nSaldo: {{ $json.saldo_texto }}\n\nRecomendação:\nProduto: {{ $json.recomendacao?.produto ?? 'nenhum produto compatível' }}\nMínimo: {{ $json.recomendacao?.minimo }}\nRentabilidade: {{ $json.recomendacao?.rentabilidade }}\nMotivo: {{ $json.motivo }}\n\nMensagem base (use apenas como referência e reescreva com suas palavras):\n{{ $json.mensagem_escolhida }}\n\nRegras:\n- Idioma: português do Brasil\n- Tom: amigável e profissional\n- Tamanho: curto (4 a 6 linhas)\n- Evitar: promessas de ganho, garantias e linguagem agressiva\n- Chame o cliente pelo primeiro nome\n- Explique em uma frase por que o produto combina com o perfil\n- Termine convidando o cliente a falar com um consultor\n- Não invente produtos, números ou informações além das fornecidas\n\nResponda SOMENTE com JSON válido, sem markdown e sem texto extra, neste formato:\n{\n  \"subject\": \"...\",\n  \"text_body\": \"...\",\n  \"html_body\": \"...\"\n}"
+            }
+          ]
+        },
+        "builtInTools": {},
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 2.3,
+      "position": [
+        1120,
+        -256
+      ],
+      "id": "a5b69486-81af-403b-ade1-ca16387397ce",
+      "name": "Message a model",
+      "credentials": {
+        "openAiApi": {
+          "id": null,
+          "name": "",
+          "__aiGatewayManaged": true
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Dados originais dos clientes (para recuperar o e-mail e os detalhes)\nconst clientes = $('Code in JavaScript2').all().map((i) => i.json);\n\n// Extrai o texto que a IA devolveu, em formatos diferentes de saída\nfunction extrairTexto(json) {\n  return (\n    json.output?.[0]?.content?.[0]?.text ??\n    json.content?.[0]?.text ??\n    json.message?.content ??\n    json.text ??\n    ''\n  );\n}\n\n// Remove ```json e ``` e pega só o trecho entre { e }\nfunction limparJSON(texto) {\n  const semMarkdown = String(texto)\n    .replace(/```json/gi, '')\n    .replace(/```/g, '')\n    .trim();\n  const inicio = semMarkdown.indexOf('{');\n  const fim = semMarkdown.lastIndexOf('}');\n  if (inicio === -1 || fim === -1) return semMarkdown;\n  return semMarkdown.slice(inicio, fim + 1);\n}\n\n// Transforma texto simples em HTML básico (caso a IA não envie html_body)\nfunction textoParaHtml(texto) {\n  return String(texto)\n    .split(/\\n\\s*\\n/)\n    .map((p) => `<p>${p.replace(/\\n/g, '<br>')}</p>`)\n    .join('');\n}\n\nreturn $input.all().map((item, i) => {\n  const j = clientes[i] ?? {};\n  const bruto = extrairTexto(item.json);\n\n  let subject = '';\n  let text_body = '';\n  let html_body = '';\n  let ok = true;\n\n  try {\n    const dados = JSON.parse(limparJSON(bruto));\n    subject = dados.subject ?? '';\n    text_body = dados.text_body ?? '';\n    html_body = dados.html_body ?? '';\n  } catch (erro) {\n    // Se a IA não devolveu um JSON válido, usa a mensagem base como reserva\n    ok = false;\n    text_body = j.mensagem_escolhida ?? '';\n  }\n\n  // Garante que nenhum campo fique vazio\n  if (!subject) subject = `Recomendação de investimento para ${j.nome ?? 'você'}`;\n  if (!text_body) text_body = j.mensagem_escolhida ?? '';\n  if (!html_body) html_body = textoParaHtml(text_body);\n\n  return {\n    json: {\n      ok,\n      to: String(j.email_to ?? '').trim(),\n      subject: subject.trim(),\n      text_body: text_body.trim(),\n      html_body: html_body.trim(),\n\n      // campos opcionais para conferência\n      meta: {\n        nome: j.nome,\n        perfil: j.perfil,\n        produto: j.recomendacao?.produto,\n        minimo: j.recomendacao?.minimo,\n        rentabilidade: j.recomendacao?.rentabilidade,\n        motivo: j.motivo,\n      },\n    },\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1488,
+        -256
+      ],
+      "id": "7590fb02-75d9-4ce2-ab30-b2387df5f038",
+      "name": "Code in JavaScript3"
+    },
+    {
+      "parameters": {
+        "sendTo": "={{ $json.to }}",
+        "subject": "={{ $json.subject }}",
+        "message": "={{ $json.html_body }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.2,
+      "position": [
+        1968,
+        -400
+      ],
+      "id": "32aa41d3-75dd-451a-9af5-516508e63016",
+      "name": "Send a message",
+      "webhookId": "baa1a90b-1d2e-4a38-bbc0-37779665872a",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "Y1wMeQzbWzHSWogJ",
+          "name": "Gmail account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 3
+          },
+          "conditions": [
+            {
+              "id": "407e0177-4fd8-4266-be55-62a04a14a3c8",
+              "leftValue": "={{ $json.to }}",
+              "rightValue": "^[^@\\s]+@{^@\\s]+\\.{^@\\s]+$",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1712,
+        -368
+      ],
+      "id": "f09d950a-7e2d-4eba-bed5-1f31dcd5f71e",
+      "name": "If"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook": {
+      "main": [
+        []
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript1": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript2": {
+      "main": [
+        [
+          {
+            "node": "Message a model",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Message a model": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript3": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send a message": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Send a message",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "timeSavedMode": "dynamic",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": true
+  },
+  "versionId": "bd66c183-c7b0-4674-a621-7fba11c1522b",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "c0044b2aa8b088b65a295191836eabf921e0221c8e7e3db9292d6f754cd529b1"
+  },
+  "nodeGroups": [],
+  "id": "lrU8Y4repgdvf6Fj",
+  "tags": []
+}
